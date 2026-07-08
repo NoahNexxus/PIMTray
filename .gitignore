@@ -24,4 +24,6 @@ Thumbs.db
 # WiX intermediate / installer output
 *.wixobj
 installer/*.msi
+installer/*.exe
 installer/*.wixpdb
+installer/_burnx/

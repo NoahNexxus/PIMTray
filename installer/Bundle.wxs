@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:netfx="http://wixtoolset.org/schemas/v4/wxs/netfx">
+
+  <!--
+    Download bootstrapper for PIM Tray.
+
+    Produces a small PIMTray-Setup.exe that:
+      1. Detects whether a Microsoft.WindowsDesktop.App runtime >= 10.0.0 is installed.
+      2. If not, downloads the .NET 10 Desktop Runtime (x64) from Microsoft's CDN and
+         installs it silently. If a compatible runtime is already present, this step is
+         skipped entirely - nothing is downloaded.
+      3. Installs the PIM Tray MSI (embedded in the bundle).
+
+    The runtime is referenced as a remote payload (Hash/Size/Version pinned), so the
+    ~60 MB installer is NOT embedded in the bundle and is only fetched on demand.
+  -->
+
+  <Bundle Name="PIM Tray"
+          Manufacturer="Thomas Marcussen"
+          Version="1.1.1.0"
+          UpgradeCode="81c35a0a-5571-47f0-830a-4b44582832f5"
+          IconSourceFile="..\Resources\tray.ico"
+          Compressed="yes">
+
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="hyperlinkLicense"
+          LicenseUrl=""
+          SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+
+    <!--
+      Uses the .NET host's own probing logic (via the netfx extension) to find the
+      highest installed 10.x desktop runtime. Empty when none is present.
+    -->
+    <netfx:DotNetCoreSearch
+        Id="DesktopRuntime10"
+        RuntimeType="desktop"
+        Platform="x64"
+        MajorVersion="10"
+        Variable="DesktopRuntime10Version" />
+
+    <Chain>
+      <!--
+        The .NET Desktop Runtime installer is itself a Burn bundle, so Protocol="burn"
+        gives proper progress reporting and exit-code handling. DetectCondition makes
+        Burn treat the package as already-installed (and skip the download) whenever a
+        compatible runtime is found.
+      -->
+      <ExePackage
+          Id="DotNetDesktopRuntime"
+          DisplayName="Microsoft .NET 10 Desktop Runtime (x64)"
+          Permanent="yes"
+          Vital="yes"
+          Protocol="burn"
+          DetectCondition="DesktopRuntime10Version &gt;= v10.0.0"
+          InstallArguments="/install /quiet /norestart"
+          RepairArguments="/repair /quiet /norestart"
+          UninstallArguments="/uninstall /quiet /norestart">
+        <ExePackagePayload
+            Name="windowsdesktop-runtime-10.0.9-win-x64.exe"
+            ProductName="Microsoft Windows Desktop Runtime 10.0.9 (x64)"
+            Description="Microsoft Windows Desktop Runtime 10.0.9 (x64)"
+            Hash="99BC2215D67F8AEA1ECB3DF642423CCABF76E5261B225F0F2D78123D84D58E64923F050A5DC58405C4D5CF074ACBAD32C4A1021A67E94629DCC57206AC4116DE"
+            Size="59878128"
+            Version="10.0.9.50000"
+            DownloadUrl="https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.9/windowsdesktop-runtime-10.0.9-win-x64.exe" />
+      </ExePackage>
+
+      <MsiPackage
+          Id="PIMTrayMsi"
+          SourceFile="PIMTray.msi"
+          Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

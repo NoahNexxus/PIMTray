@@ -40,7 +40,7 @@
     <ComponentGroup Id="MainFiles" Directory="INSTALLFOLDER">
       <Component Id="MainExe" Bitness="always64">
         <File Id="PIMTrayExe"
-              Source="..\bin\Release\net9.0-windows\win-x64\publish\PIMTray.exe"
+              Source="..\bin\Release\net10.0-windows\win-x64\publish\PIMTray.exe"
               KeyPath="yes" />
       </Component>
     </ComponentGroup>
