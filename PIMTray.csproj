@@ -13,6 +13,11 @@
          version and required an external resource compiler to update). -->
     <ApplicationIcon>Resources\tray.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The installer packages a single PIMTray.exe, so publish must bundle the managed
+         assembly, deps.json, and runtimeconfig.json into the apphost. Without this, the
+         installed .exe is only a launcher and fails with "PIMTray.dll does not exist".
+         Publish with a RID (framework-dependent), e.g. dotnet publish -r win-x64. -->
+    <PublishSingleFile>true</PublishSingleFile>
 
     <Product>PIM Tray</Product>
     <AssemblyTitle>PIM Tray</AssemblyTitle>

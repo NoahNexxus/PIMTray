@@ -40,7 +40,7 @@ $installerDir = $PSScriptRoot
 
 Write-Host "==> Publishing PIMTray ($Configuration/$Runtime)..." -ForegroundColor Cyan
 dotnet publish (Join-Path $repoRoot "PIMTray.csproj") `
-    -c $Configuration -r $Runtime --self-contained false --nologo
+    -c $Configuration -r $Runtime --self-contained false -p:PublishSingleFile=true --nologo
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
 
 Push-Location $installerDir
