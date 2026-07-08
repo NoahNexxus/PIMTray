@@ -8,7 +8,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PIMTray</RootNamespace>
     <AssemblyName>PIMTray</AssemblyName>
-    <Win32Resource>Resources\PIMTray.res</Win32Resource>
+    <!-- Let the SDK generate the Win32 version resource from the metadata below, and embed
+         the app icon + manifest, instead of a hand-maintained .res (which hardcoded the
+         version and required an external resource compiler to update). -->
+    <ApplicationIcon>Resources\tray.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
 
     <Product>PIM Tray</Product>
     <AssemblyTitle>PIM Tray</AssemblyTitle>
