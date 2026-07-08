@@ -27,7 +27,7 @@ public sealed class AuthService
             .WithAuthority(AzureCloudInstance.AzurePublic, cfg.TenantId)
             .WithRedirectUri(cfg.RedirectUri)
             .WithClientName("PIMTray")
-            .WithClientVersion("1.0.0")
+            .WithClientVersion("1.1.1")
             .Build();
 
         await AttachTokenCacheAsync(app, cfg.Id);
@@ -43,9 +43,20 @@ public sealed class AuthService
 
         // Each connection gets its own cache file (keyed by stable connection Id, not the
         // user-editable Name) so signing in to one tenant never disturbs another's cached tokens.
-        var props = new StorageCreationPropertiesBuilder($"msal_cache_{connectionId}.bin", cacheDir).Build();
+        // The Id comes from appsettings.json, which a user could hand-edit, so it's sanitized
+        // to filename-safe characters before use - otherwise a value like "..\\..\\x" could
+        // steer the cache file outside cacheDir. Legitimate GUID ("N") ids pass through unchanged.
+        var safeId = SanitizeForFileName(connectionId);
+        var props = new StorageCreationPropertiesBuilder($"msal_cache_{safeId}.bin", cacheDir).Build();
         var helper = await MsalCacheHelper.CreateAsync(props);
         helper.RegisterCache(app.UserTokenCache);
+    }
+
+    private static string SanitizeForFileName(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return "default";
+        var chars = value.Select(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray();
+        return new string(chars);
     }
 
     public async Task<AuthResult> SignInAsync(CancellationToken ct = default)

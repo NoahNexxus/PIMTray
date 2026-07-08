@@ -3,7 +3,7 @@
 
   <Package Name="PIM Tray"
            Manufacturer="Thomas Marcussen"
-           Version="1.1.0.0"
+           Version="1.1.1.0"
            UpgradeCode="2c9f4a17-8b53-4a16-9c1c-3e2d5f7b4a82"
            Scope="perMachine"
            Compressed="yes"

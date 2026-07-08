@@ -66,6 +66,48 @@ public class PimServiceTests
     }
 
     [Fact]
+    public async Task GetEligibleRolesAsync_SurfacesGraphErrorCodeAndMessage_ButNotRawBody()
+    {
+        const string errorBody = """
+        { "error": { "code": "Authorization_RequestDenied", "message": "Insufficient privileges." } }
+        """;
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent(errorBody)
+        });
+        var service = new PimService(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<PimApiException>(
+            () => service.GetEligibleRolesAsync("user-1", "Prod"));
+
+        // The parsed code/message is user-facing; the raw JSON body is not dumped into the message.
+        Assert.Contains("Authorization_RequestDenied", ex.Message);
+        Assert.Contains("Insufficient privileges.", ex.Message);
+        Assert.DoesNotContain("\"error\"", ex.Message);
+        // The full body remains available for diagnostics.
+        Assert.Equal(errorBody, ex.ResponseBody);
+    }
+
+    [Fact]
+    public async Task GetEligibleRolesAsync_DoesNotSurfaceNonJsonBody_InMessage()
+    {
+        const string htmlBody = "<html><body>Gateway error 502 - internal-host.example</body></html>";
+        var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.BadGateway)
+        {
+            Content = new StringContent(htmlBody)
+        });
+        var service = new PimService(new HttpClient(handler));
+
+        var ex = await Assert.ThrowsAsync<PimApiException>(
+            () => service.GetEligibleRolesAsync("user-1", "Prod"));
+
+        // A non-JSON body (e.g. an HTML error page) must not be echoed into the message.
+        Assert.DoesNotContain("internal-host.example", ex.Message);
+        Assert.DoesNotContain("<html>", ex.Message);
+        Assert.Equal(htmlBody, ex.ResponseBody);
+    }
+
+    [Fact]
     public async Task ActivateRoleAsync_PostsExpectedBody()
     {
         var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(HttpStatusCode.Created));

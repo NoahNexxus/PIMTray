@@ -181,10 +181,44 @@ public sealed class PimApiException : Exception
     public string ResponseBody { get; }
 
     public PimApiException(int statusCode, string reason, string body)
-        : base($"Graph PIM call failed: HTTP {statusCode} {reason}. Body: {Truncate(body, 800)}")
+        : base(BuildMessage(statusCode, reason, body))
     {
         StatusCode = statusCode;
         ResponseBody = body;
+    }
+
+    // Surfaces the Graph-provided error code/message when the body is the standard
+    // { "error": { "code", "message" } } envelope, instead of dumping the raw response
+    // (which can contain principal/role identifiers, or an unrelated HTML error page)
+    // into user-facing dialogs and balloon tips. The full body stays on ResponseBody
+    // for diagnostics.
+    private static string BuildMessage(int statusCode, string reason, string body)
+    {
+        var detail = TryExtractGraphError(body);
+        return detail is null
+            ? $"Graph PIM call failed: HTTP {statusCode} {reason}."
+            : $"Graph PIM call failed: HTTP {statusCode} {reason} - {detail}";
+    }
+
+    private static string? TryExtractGraphError(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("error", out var err)) return null;
+
+            var code = err.TryGetProperty("code", out var c) ? c.GetString() : null;
+            var msg = err.TryGetProperty("message", out var m) ? m.GetString() : null;
+            var combined = string.Join(": ",
+                new[] { code, msg }.Where(s => !string.IsNullOrWhiteSpace(s)));
+            return string.IsNullOrWhiteSpace(combined) ? null : Truncate(combined, 300);
+        }
+        catch (JsonException)
+        {
+            // Non-JSON body (e.g. an HTML error page) - don't surface it raw.
+            return null;
+        }
     }
 
     private static string Truncate(string s, int max)

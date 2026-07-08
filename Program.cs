@@ -26,7 +26,10 @@ internal static class Program
 
     private static void ShowFatal(string title, Exception? ex)
     {
-        var message = ex?.ToString() ?? "Unknown error.";
+        // Show the exception type and message rather than the full ToString(): the latter
+        // includes the stack trace and local file paths, which don't help the user and are
+        // more than an error dialog should surface.
+        var message = ex is null ? "Unknown error." : $"{ex.GetType().Name}: {ex.Message}";
         MessageBox.Show(message, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }
