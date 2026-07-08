@@ -9,6 +9,7 @@ public sealed class PimService
 {
     private const string GraphBase = "https://graph.microsoft.com/v1.0";
     private readonly HttpClient _http;
+    private readonly Dictionary<string, string> _scopeNameCache = new();
 
     public PimService(HttpClient http)
     {
@@ -20,10 +21,12 @@ public sealed class PimService
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
     }
 
-    public async Task<IReadOnlyList<EligibleRole>> GetEligibleRolesAsync(string userObjectId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<EligibleRole>> GetEligibleRolesAsync(
+        string userObjectId, string connectionName, CancellationToken ct = default)
     {
+        var filterValue = Uri.EscapeDataString(EscapeODataLiteral(userObjectId));
         var url = $"{GraphBase}/roleManagement/directory/roleEligibilitySchedules"
-                + $"?$filter=principalId eq '{userObjectId}'"
+                + $"?$filter=principalId eq '{filterValue}'"
                 + "&$expand=roleDefinition";
 
         using var resp = await _http.GetAsync(url, ct);
@@ -36,13 +39,13 @@ public sealed class PimService
         foreach (var s in payload.Value)
         {
             var name = s.RoleDefinition?.DisplayName ?? s.RoleDefinitionId ?? "(unknown role)";
-            var scope = DescribeScope(s.DirectoryScopeId);
+            var scope = await DescribeScopeAsync(s.DirectoryScopeId, ct);
             list.Add(new EligibleRole(
                 RoleDefinitionId: s.RoleDefinitionId ?? "",
                 RoleDisplayName: name,
                 DirectoryScopeId: s.DirectoryScopeId ?? "/",
                 ScopeDescription: scope,
-                MaxDurationHours: 8));
+                ConnectionName: connectionName));
         }
 
         return list
@@ -92,11 +95,40 @@ public sealed class PimService
         throw new PimApiException((int)resp.StatusCode, resp.ReasonPhrase ?? "", body);
     }
 
-    private static string DescribeScope(string? scopeId) => scopeId switch
+    private static string EscapeODataLiteral(string value) => value.Replace("'", "''");
+
+    private const string AdministrativeUnitPrefix = "/administrativeUnits/";
+
+    private async Task<string> DescribeScopeAsync(string? scopeId, CancellationToken ct)
     {
-        null or "" or "/" => "Directory",
-        _ => scopeId
-    };
+        if (string.IsNullOrEmpty(scopeId) || scopeId == "/") return "Directory";
+
+        if (_scopeNameCache.TryGetValue(scopeId, out var cached)) return cached;
+
+        var result = scopeId;
+        if (scopeId.StartsWith(AdministrativeUnitPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var auId = Uri.EscapeDataString(scopeId[AdministrativeUnitPrefix.Length..]);
+            try
+            {
+                using var resp = await _http.GetAsync(
+                    $"{GraphBase}/directory/administrativeUnits/{auId}?$select=displayName", ct);
+                if (resp.IsSuccessStatusCode)
+                {
+                    var au = await resp.Content.ReadFromJsonAsync<DisplayNameOnly>(cancellationToken: ct);
+                    if (!string.IsNullOrWhiteSpace(au?.DisplayName))
+                        result = $"AU: {au.DisplayName}";
+                }
+            }
+            catch
+            {
+                // best effort - fall back to the raw scope id if resolution fails
+            }
+        }
+
+        _scopeNameCache[scopeId] = result;
+        return result;
+    }
 
     private sealed class EligibilityResponse
     {
@@ -111,6 +143,11 @@ public sealed class PimService
     }
 
     private sealed class RoleDefinition
+    {
+        [JsonPropertyName("displayName")] public string? DisplayName { get; set; }
+    }
+
+    private sealed class DisplayNameOnly
     {
         [JsonPropertyName("displayName")] public string? DisplayName { get; set; }
     }

@@ -1,4 +1,4 @@
-using PIMTray.Auth;
+using PIMTray.Connections;
 using PIMTray.Pim;
 
 namespace PIMTray.UI;
@@ -8,31 +8,25 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _icon;
     private readonly ContextMenuStrip _menu;
     private readonly ToolStripMenuItem _statusItem;
-    private readonly ToolStripMenuItem _signInItem;
-    private readonly ToolStripMenuItem _signOutItem;
-    private readonly ToolStripMenuItem _refreshItem;
-    private readonly ToolStripMenuItem _activateRoot;
     private readonly ToolStripMenuItem _openWindowItem;
+    private readonly ToolStripMenuItem _accountsRoot;
+    private readonly ToolStripMenuItem _activateRoot;
+    private readonly ToolStripMenuItem _refreshItem;
     private readonly ToolStripMenuItem _exitItem;
     private readonly ToolStripMenuItem _aboutItem;
-    private readonly HttpClient _http = new();
     private readonly MainForm _mainForm;
 
     private AppConfig _cfg = null!;
-    private AuthService _auth = null!;
-    private PimService _pim = null!;
-    private AuthResult? _session;
-    private IReadOnlyList<EligibleRole> _roles = Array.Empty<EligibleRole>();
+    private List<ConnectionSession> _connections = new();
 
     public TrayApplicationContext()
     {
         _menu = new ContextMenuStrip();
-        _statusItem = new ToolStripMenuItem("Not signed in") { Enabled = false };
+        _statusItem = new ToolStripMenuItem("Loading...") { Enabled = false };
         _openWindowItem = new ToolStripMenuItem("Open PIM Tray", null, (_, _) => ShowMainWindow());
-        _signInItem = new ToolStripMenuItem("Sign in...", null, async (_, _) => await SignInAsync());
-        _signOutItem = new ToolStripMenuItem("Sign out", null, async (_, _) => await SignOutAsync()) { Visible = false };
-        _refreshItem = new ToolStripMenuItem("Refresh roles", null, async (_, _) => await RefreshRolesAsync()) { Visible = false };
-        _activateRoot = new ToolStripMenuItem("Eligible roles") { Visible = false };
+        _accountsRoot = new ToolStripMenuItem("Accounts");
+        _activateRoot = new ToolStripMenuItem("Eligible roles");
+        _refreshItem = new ToolStripMenuItem("Refresh roles", null, async (_, _) => await RefreshAllAsync()) { Enabled = false };
         _exitItem = new ToolStripMenuItem("Exit", null, (_, _) => ExitApp());
         _aboutItem = new ToolStripMenuItem("About...", null, (_, _) => ShowAbout());
 
@@ -42,10 +36,9 @@ public sealed class TrayApplicationContext : ApplicationContext
             new ToolStripSeparator(),
             _openWindowItem,
             new ToolStripSeparator(),
-            _signInItem,
+            _accountsRoot,
             _activateRoot,
             _refreshItem,
-            _signOutItem,
             new ToolStripSeparator(),
             _exitItem,
             _aboutItem
@@ -54,7 +47,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _icon = new NotifyIcon
         {
             Icon = AppIcon.Load(),
-            Text = "PIM Tray - not signed in",
+            Text = "PIM Tray - loading...",
             Visible = true,
             ContextMenuStrip = _menu
         };
@@ -62,9 +55,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         _icon.MouseDoubleClick += (_, _) => ShowMainWindow();
 
         _mainForm = new MainForm();
-        _mainForm.SignInRequested += () => _ = SignInAsync();
-        _mainForm.SignOutRequested += () => _ = SignOutAsync();
-        _mainForm.RefreshRequested += () => _ = RefreshRolesAsync();
+        _mainForm.AccountSignInRequested += id => _ = SignInAsync(id);
+        _mainForm.AccountSignOutRequested += id => _ = SignOutAsync(id);
+        _mainForm.ManageAccountsRequested += ShowManageAccounts;
+        _mainForm.RefreshRequested += () => _ = RefreshAllAsync();
         _mainForm.ActivateRolesRequested += roles => _ = ActivateRolesAsync(roles);
         _mainForm.AboutRequested += ShowAbout;
 
@@ -76,17 +70,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         try
         {
             _cfg = AppConfig.Load();
-            _auth = await AuthService.CreateAsync(_cfg.AzureAd);
-            _pim = new PimService(_http);
+            _connections = _cfg.Connections.Select(CreateSession).ToList();
+            RebuildTrayMenu();
+            PushStateToMainForm();
 
-            var silent = await _auth.TryGetTokenSilentAsync();
-            if (silent is not null)
+            var restoreTasks = _connections.Select(async conn =>
             {
-                _session = silent;
-                _pim.SetAccessToken(silent.AccessToken);
-                ApplySignedInState();
-                await RefreshRolesAsync();
-            }
+                try { await conn.TryRestoreAsync(); }
+                catch (Exception ex) { ShowError($"Failed to restore session for {conn.Name}", ex); }
+            });
+            await Task.WhenAll(restoreTasks);
         }
         catch (Exception ex)
         {
@@ -94,84 +87,64 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private async Task SignInAsync()
+    private ConnectionSession CreateSession(ConnectionConfig cfg)
     {
+        var session = new ConnectionSession(cfg);
+        session.Changed += OnConnectionChanged;
+        return session;
+    }
+
+    private void OnConnectionChanged()
+    {
+        RebuildTrayMenu();
+        PushStateToMainForm();
+    }
+
+    private async Task SignInAsync(string connectionId)
+    {
+        var session = _connections.FirstOrDefault(c => c.Config.Id == connectionId);
+        if (session is null) return;
+
         try
         {
-            _session = await _auth.SignInAsync();
-            _pim.SetAccessToken(_session.AccessToken);
-            ApplySignedInState();
-            await RefreshRolesAsync();
-            ShowInfo("Signed in", $"Signed in as {_session.Username}");
+            await session.SignInAsync();
+            if (session.IsSignedIn)
+                ShowInfo("Signed in", $"Signed in to {session.Name} as {session.Session!.Username}");
         }
         catch (Exception ex)
         {
-            ShowError("Sign-in failed", ex);
+            ShowError($"Sign-in to {session.Name} failed", ex);
         }
     }
 
-    private async Task SignOutAsync()
+    private async Task SignOutAsync(string connectionId)
     {
+        var session = _connections.FirstOrDefault(c => c.Config.Id == connectionId);
+        if (session is null) return;
+
         try
         {
-            await _auth.SignOutAsync();
-            _session = null;
-            _pim.SetAccessToken("");
-            _roles = Array.Empty<EligibleRole>();
-            ApplySignedOutState();
+            await session.SignOutAsync();
         }
         catch (Exception ex)
         {
-            ShowError("Sign-out failed", ex);
+            ShowError($"Sign-out from {session.Name} failed", ex);
         }
     }
 
-    private async Task RefreshRolesAsync()
+    private async Task RefreshAllAsync()
     {
-        if (_session is null) return;
-        try
+        var tasks = _connections.Where(c => c.IsSignedIn).Select(async conn =>
         {
-            _activateRoot.DropDownItems.Clear();
-            _activateRoot.DropDownItems.Add(new ToolStripMenuItem("Loading...") { Enabled = false });
-
-            var fresh = await _auth.TryGetTokenSilentAsync() ?? _session;
-            _session = fresh;
-            _pim.SetAccessToken(fresh.AccessToken);
-
-            _roles = await _pim.GetEligibleRolesAsync(fresh.UserObjectId);
-            RebuildTrayRoleMenu();
-            _mainForm.SetRoles(_roles);
-        }
-        catch (Exception ex)
-        {
-            _activateRoot.DropDownItems.Clear();
-            _activateRoot.DropDownItems.Add(new ToolStripMenuItem("Error - see notification") { Enabled = false });
-            ShowError("Failed to load eligible roles", ex);
-        }
-    }
-
-    private void RebuildTrayRoleMenu()
-    {
-        _activateRoot.DropDownItems.Clear();
-        if (_roles.Count == 0)
-        {
-            _activateRoot.DropDownItems.Add(new ToolStripMenuItem("No eligible roles") { Enabled = false });
-            return;
-        }
-        foreach (var r in _roles)
-        {
-            var label = r.ScopeDescription == "Directory"
-                ? r.RoleDisplayName
-                : $"{r.RoleDisplayName}  ({r.ScopeDescription})";
-            var captured = r;
-            _activateRoot.DropDownItems.Add(new ToolStripMenuItem(label, null,
-                async (_, _) => await ActivateRolesAsync(new[] { captured })));
-        }
+            try { await conn.RefreshRolesAsync(); }
+            catch (Exception ex) { ShowError($"Failed to load eligible roles for {conn.Name}", ex); }
+        });
+        await Task.WhenAll(tasks);
     }
 
     private async Task ActivateRolesAsync(IReadOnlyList<EligibleRole> roles)
     {
-        if (_session is null || roles.Count == 0) return;
+        if (roles.Count == 0) return;
 
         using var form = new ActivateRoleForm(roles, _cfg.Pim.DurationOptionsHours, _cfg.Pim.DefaultDurationHours);
         if (form.ShowDialog() != DialogResult.OK) return;
@@ -181,19 +154,30 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         foreach (var role in roles)
         {
+            var session = _connections.FirstOrDefault(c =>
+                c.IsSignedIn && c.Name.Equals(role.ConnectionName, StringComparison.OrdinalIgnoreCase));
+
+            if (session is null)
+            {
+                failures.Add((Describe(role), $"Not signed in to {role.ConnectionName}"));
+                continue;
+            }
+
             try
             {
-                await _pim.ActivateRoleAsync(_session.UserObjectId, role, form.Justification, form.Duration);
-                ok.Add(role.RoleDisplayName);
+                await session.ActivateRoleAsync(role, form.Justification, form.Duration);
+                ok.Add(Describe(role));
             }
             catch (Exception ex)
             {
-                failures.Add((role.RoleDisplayName, ex.Message));
+                failures.Add((Describe(role), ex.Message));
             }
         }
 
         ReportActivationResult(ok, failures, form.Duration);
     }
+
+    private static string Describe(EligibleRole role) => $"{role.RoleDisplayName} ({role.ConnectionName})";
 
     private void ReportActivationResult(
         IReadOnlyList<string> succeeded,
@@ -226,27 +210,102 @@ public sealed class TrayApplicationContext : ApplicationContext
         _icon.ShowBalloonTip(8000, "PIM activation - partial success", mixedBody, ToolTipIcon.Warning);
     }
 
-    private void ApplySignedInState()
+    private void ShowManageAccounts()
     {
-        _statusItem.Text = $"Signed in: {_session?.Username}";
-        _signInItem.Visible = false;
-        _signOutItem.Visible = true;
-        _refreshItem.Visible = true;
-        _activateRoot.Visible = true;
-        _icon.Text = $"PIM Tray - {_session?.Username}".Trim();
-        _mainForm.SetSignedIn(_session?.Username ?? "");
+        using var form = new ManageAccountsForm(_connections.Select(c => c.Config));
+        form.ShowDialog();
+        if (form.ChangesMade)
+            ReconcileConnections(form.Connections);
     }
 
-    private void ApplySignedOutState()
+    private void ReconcileConnections(List<ConnectionConfig> updated)
     {
-        _statusItem.Text = "Not signed in";
-        _signInItem.Visible = true;
-        _signOutItem.Visible = false;
-        _refreshItem.Visible = false;
-        _activateRoot.Visible = false;
+        var updatedIds = updated.Select(c => c.Id).ToHashSet();
+
+        foreach (var removed in _connections.Where(c => !updatedIds.Contains(c.Config.Id)).ToList())
+        {
+            _connections.Remove(removed);
+            removed.Changed -= OnConnectionChanged;
+            var toDispose = removed;
+            _ = toDispose.SignOutAsync().ContinueWith(_ => toDispose.Dispose());
+        }
+
+        foreach (var cfg in updated)
+        {
+            var existing = _connections.FirstOrDefault(c => c.Config.Id == cfg.Id);
+            if (existing is not null)
+            {
+                existing.UpdateConfig(cfg);
+            }
+            else
+            {
+                var session = CreateSession(cfg);
+                _connections.Add(session);
+                _ = session.TryRestoreAsync().ContinueWith(t =>
+                {
+                    if (t.Exception is not null) ShowError($"Failed to restore session for {session.Name}", t.Exception);
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
+        }
+
+        _cfg.Connections = updated;
+        AppConfig.Save(_cfg);
+        RebuildTrayMenu();
+        PushStateToMainForm();
+    }
+
+    private void RebuildTrayMenu()
+    {
+        var signedInCount = _connections.Count(c => c.IsSignedIn);
+
+        _statusItem.Text = _connections.Count == 0
+            ? "No accounts configured"
+            : $"{signedInCount} of {_connections.Count} accounts signed in";
+
+        _accountsRoot.DropDownItems.Clear();
+        foreach (var conn in _connections)
+        {
+            var id = conn.Config.Id;
+            var label = conn.IsSignedIn ? $"{conn.Name} ({conn.Session!.Username})" : $"{conn.Name} (not signed in)";
+            var item = new ToolStripMenuItem(label);
+            item.DropDownItems.Add(new ToolStripMenuItem("Sign in", null, async (_, _) => await SignInAsync(id))
+            { Enabled = !conn.IsSignedIn });
+            item.DropDownItems.Add(new ToolStripMenuItem("Sign out", null, async (_, _) => await SignOutAsync(id))
+            { Enabled = conn.IsSignedIn });
+            _accountsRoot.DropDownItems.Add(item);
+        }
+        _accountsRoot.DropDownItems.Add(new ToolStripSeparator());
+        _accountsRoot.DropDownItems.Add(new ToolStripMenuItem("Manage accounts...", null, (_, _) => ShowManageAccounts()));
+
+        var allRoles = _connections.Where(c => c.IsSignedIn).SelectMany(c => c.Roles).ToList();
         _activateRoot.DropDownItems.Clear();
-        _icon.Text = "PIM Tray - not signed in";
-        _mainForm.SetSignedOut();
+        if (allRoles.Count == 0)
+        {
+            var message = signedInCount == 0 ? "Sign in to see eligible roles" : "No eligible roles";
+            _activateRoot.DropDownItems.Add(new ToolStripMenuItem(message) { Enabled = false });
+        }
+        else
+        {
+            foreach (var entry in RoleGrouping.BuildEntries(allRoles))
+            {
+                var captured = entry.Roles;
+                _activateRoot.DropDownItems.Add(new ToolStripMenuItem(entry.Label, null,
+                    async (_, _) => await ActivateRolesAsync(captured)));
+            }
+        }
+
+        _refreshItem.Enabled = signedInCount > 0;
+
+        var tooltip = signedInCount > 0
+            ? $"PIM Tray - {signedInCount}/{_connections.Count} signed in"
+            : "PIM Tray - not signed in";
+        _icon.Text = tooltip.Length <= 127 ? tooltip : tooltip[..127];
+    }
+
+    private void PushStateToMainForm()
+    {
+        _mainForm.SetConnections(_connections);
+        _mainForm.SetRoles(_connections.Where(c => c.IsSignedIn).SelectMany(c => c.Roles).ToList());
     }
 
     private void ShowMainWindow() => _mainForm.ShowAndFocus();
@@ -274,7 +333,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _icon.Visible = false;
         _icon.Dispose();
         _mainForm.RequestRealExit();
-        _http.Dispose();
+        foreach (var conn in _connections) conn.Dispose();
         ExitThread();
     }
 }

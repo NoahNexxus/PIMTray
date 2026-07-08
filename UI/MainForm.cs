@@ -1,13 +1,13 @@
+using PIMTray.Connections;
 using PIMTray.Pim;
 
 namespace PIMTray.UI;
 
-
-
 public sealed class MainForm : Form
 {
-    public event Action? SignInRequested;
-    public event Action? SignOutRequested;
+    public event Action<string>? AccountSignInRequested;
+    public event Action<string>? AccountSignOutRequested;
+    public event Action? ManageAccountsRequested;
     public event Action? RefreshRequested;
     public event Action<IReadOnlyList<EligibleRole>>? ActivateRolesRequested;
     public event Action? AboutRequested;
@@ -18,8 +18,7 @@ public sealed class MainForm : Form
     private readonly StatusStrip _status;
     private readonly ToolStripStatusLabel _statusLabel;
 
-    private readonly ToolStripMenuItem _signInMenu;
-    private readonly ToolStripMenuItem _signOutMenu;
+    private readonly ToolStripMenuItem _accountsMenu;
     private readonly ToolStripMenuItem _rolesMenu;
     private readonly ToolStripMenuItem _refreshMenu;
     private readonly ToolStripMenuItem _activateSelectedMenu;
@@ -32,15 +31,13 @@ public sealed class MainForm : Form
         Text = "PIM Tray";
         Icon = AppIcon.Load();
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(560, 360);
-        MinimumSize = new Size(420, 280);
+        ClientSize = new Size(620, 380);
+        MinimumSize = new Size(460, 300);
         Font = new Font("Segoe UI", 9F);
         ShowInTaskbar = true;
 
         var menu = new MenuStrip();
 
-        _signInMenu = new ToolStripMenuItem("&Sign in...", null, (_, _) => SignInRequested?.Invoke());
-        _signOutMenu = new ToolStripMenuItem("Sign &out", null, (_, _) => SignOutRequested?.Invoke()) { Enabled = false };
         var hideMenu = new ToolStripMenuItem("&Hide to tray", null, (_, _) => Hide());
         var exitMenu = new ToolStripMenuItem("E&xit", null, (_, _) => RequestExit());
 
@@ -51,10 +48,10 @@ public sealed class MainForm : Form
         };
 
         var fileMenu = new ToolStripMenuItem("&File");
-        fileMenu.DropDownItems.AddRange(new ToolStripItem[]
-        {
-            _signInMenu, _signOutMenu, new ToolStripSeparator(), hideMenu, exitMenu
-        });
+        fileMenu.DropDownItems.AddRange(new ToolStripItem[] { hideMenu, exitMenu });
+
+        _accountsMenu = new ToolStripMenuItem("&Accounts");
+        // Populated dynamically by SetConnections().
 
         _refreshMenu = new ToolStripMenuItem("&Refresh", null, (_, _) => RefreshRequested?.Invoke())
         { ShortcutKeys = Keys.F5, Enabled = false };
@@ -72,13 +69,13 @@ public sealed class MainForm : Form
         _rolesMenu.DropDownItems.Add(selectAllMenu);
         _rolesMenu.DropDownItems.Add(clearMenu);
         _rolesMenu.DropDownItems.Add(new ToolStripSeparator());
-        // Dynamic role items get appended after the separator in SetRoles().
+        // Dynamic role entries get appended after the separator in SetRoles().
 
         var aboutMenu = new ToolStripMenuItem("&About...", null, (_, _) => AboutRequested?.Invoke());
         var helpMenu = new ToolStripMenuItem("&Help");
         helpMenu.DropDownItems.Add(aboutMenu);
 
-        menu.Items.AddRange(new ToolStripItem[] { fileMenu, _rolesMenu, helpMenu });
+        menu.Items.AddRange(new ToolStripItem[] { fileMenu, _accountsMenu, _rolesMenu, helpMenu });
         MainMenuStrip = menu;
 
         _list = new ListView
@@ -92,8 +89,9 @@ public sealed class MainForm : Form
             CheckBoxes = true
         };
         _list.ItemChecked += (_, _) => UpdateActivateEnabled();
-        _list.Columns.Add("Role", 260);
-        _list.Columns.Add("Scope", 240);
+        _list.Columns.Add("Role", 220);
+        _list.Columns.Add("Account", 120);
+        _list.Columns.Add("Scope", 220);
         _list.DoubleClick += (_, _) => ActivateSelected();
         _list.SelectedIndexChanged += (_, _) => UpdateActivateEnabled();
 
@@ -138,25 +136,42 @@ public sealed class MainForm : Form
         FormClosing += OnFormClosing;
     }
 
-    public void SetSignedIn(string username)
+    public void SetConnections(IReadOnlyList<ConnectionSession> connections)
     {
-        _signInMenu.Enabled = false;
-        _signOutMenu.Enabled = true;
-        _refreshMenu.Enabled = true;
-        _refreshBtn.Enabled = true;
-        _statusLabel.Text = $"Signed in as {username}";
-    }
+        _accountsMenu.DropDownItems.Clear();
 
-    public void SetSignedOut()
-    {
-        _signInMenu.Enabled = true;
-        _signOutMenu.Enabled = false;
-        _refreshMenu.Enabled = false;
-        _refreshBtn.Enabled = false;
-        _activateSelectedMenu.Enabled = false;
-        _activateBtn.Enabled = false;
-        _statusLabel.Text = "Not signed in";
-        SetRoles(Array.Empty<EligibleRole>());
+        foreach (var conn in connections)
+        {
+            var id = conn.Config.Id;
+            var label = conn.IsSignedIn ? $"{conn.Name} — {conn.Session!.Username}" : $"{conn.Name} — not signed in";
+            var item = new ToolStripMenuItem(label);
+
+            var signIn = new ToolStripMenuItem("Sign in", null, (_, _) => AccountSignInRequested?.Invoke(id))
+            { Enabled = !conn.IsSignedIn };
+            var signOut = new ToolStripMenuItem("Sign out", null, (_, _) => AccountSignOutRequested?.Invoke(id))
+            { Enabled = conn.IsSignedIn };
+            item.DropDownItems.Add(signIn);
+            item.DropDownItems.Add(signOut);
+
+            _accountsMenu.DropDownItems.Add(item);
+        }
+
+        _accountsMenu.DropDownItems.Add(new ToolStripSeparator());
+        _accountsMenu.DropDownItems.Add(new ToolStripMenuItem("&Manage accounts...", null,
+            (_, _) => ManageAccountsRequested?.Invoke()));
+
+        var signedInCount = connections.Count(c => c.IsSignedIn);
+        var refreshEnabled = signedInCount > 0;
+        _refreshMenu.Enabled = refreshEnabled;
+        _refreshBtn.Enabled = refreshEnabled;
+
+        _statusLabel.Text = connections.Count == 0
+            ? "No accounts configured - use Accounts > Manage accounts..."
+            : signedInCount == 0
+                ? "Not signed in to any account"
+                : $"Signed in: {string.Join(", ", connections.Where(c => c.IsSignedIn).Select(c => $"{c.Name} ({c.Session!.Username})"))}";
+
+        if (signedInCount == 0) SetRoles(Array.Empty<EligibleRole>());
     }
 
     public void SetRoles(IReadOnlyList<EligibleRole> roles)
@@ -168,6 +183,7 @@ public sealed class MainForm : Form
         foreach (var r in roles)
         {
             var item = new ListViewItem(r.RoleDisplayName) { Tag = r };
+            item.SubItems.Add(r.ConnectionName);
             item.SubItems.Add(r.ScopeDescription);
             _list.Items.Add(item);
         }
@@ -184,13 +200,12 @@ public sealed class MainForm : Form
         }
         else
         {
-            foreach (var r in roles)
+            foreach (var entry in RoleGrouping.BuildEntries(roles))
             {
-                var label = r.ScopeDescription == "Directory"
-                    ? r.RoleDisplayName
-                    : $"{r.RoleDisplayName}  ({r.ScopeDescription})";
+                var captured = entry.Roles;
+                var label = entry.IsCrossTenant ? $"&{entry.Label}" : entry.Label;
                 _rolesMenu.DropDownItems.Add(new ToolStripMenuItem(label, null,
-                    (_, _) => ActivateRolesRequested?.Invoke(new[] { r })));
+                    (_, _) => ActivateRolesRequested?.Invoke(captured)));
             }
         }
 

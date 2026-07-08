@@ -20,7 +20,7 @@ public sealed class AuthService
         _app = app;
     }
 
-    public static async Task<AuthService> CreateAsync(AzureAdConfig cfg)
+    public static async Task<AuthService> CreateAsync(ConnectionConfig cfg)
     {
         var app = PublicClientApplicationBuilder
             .Create(cfg.ClientId)
@@ -30,18 +30,20 @@ public sealed class AuthService
             .WithClientVersion("1.0.0")
             .Build();
 
-        await AttachTokenCacheAsync(app);
+        await AttachTokenCacheAsync(app, cfg.Id);
         return new AuthService(app);
     }
 
-    private static async Task AttachTokenCacheAsync(IPublicClientApplication app)
+    private static async Task AttachTokenCacheAsync(IPublicClientApplication app, string connectionId)
     {
         var cacheDir = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "PIMTray");
         Directory.CreateDirectory(cacheDir);
 
-        var props = new StorageCreationPropertiesBuilder("msal_cache.bin", cacheDir).Build();
+        // Each connection gets its own cache file (keyed by stable connection Id, not the
+        // user-editable Name) so signing in to one tenant never disturbs another's cached tokens.
+        var props = new StorageCreationPropertiesBuilder($"msal_cache_{connectionId}.bin", cacheDir).Build();
         var helper = await MsalCacheHelper.CreateAsync(props);
         helper.RegisterCache(app.UserTokenCache);
     }
@@ -107,7 +109,11 @@ public sealed class AuthService
 
     private static string GetUserObjectId(AuthenticationResult r)
     {
-        return r.UniqueId;
+        // Prefer the `oid` claim directly - it's what Graph's principalId actually matches.
+        // AuthenticationResult.UniqueId normally mirrors it but can fall back to `sub` for
+        // some guest/B2B token shapes, which would silently mismatch the PIM principal.
+        var oid = r.ClaimsPrincipal?.FindFirst("oid")?.Value;
+        return !string.IsNullOrEmpty(oid) ? oid : r.UniqueId;
     }
 }
 

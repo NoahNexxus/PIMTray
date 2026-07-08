@@ -48,11 +48,13 @@ public sealed class ActivateRoleForm : Form
             BackColor = SystemColors.Control,
             BorderStyle = BorderStyle.FixedSingle
         };
+        var multiTenant = roles.Select(r => r.ConnectionName).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1;
         foreach (var r in roles)
         {
-            rolesList.Items.Add(r.ScopeDescription == "Directory"
+            var label = r.ScopeDescription == "Directory"
                 ? r.RoleDisplayName
-                : $"{r.RoleDisplayName}  ({r.ScopeDescription})");
+                : $"{r.RoleDisplayName}  ({r.ScopeDescription})";
+            rolesList.Items.Add(multiTenant ? $"{label}  [{r.ConnectionName}]" : label);
         }
 
         var listBottom = rolesList.Bottom + 10;

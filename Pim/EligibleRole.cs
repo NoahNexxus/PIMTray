@@ -5,4 +5,4 @@ public sealed record EligibleRole(
     string RoleDisplayName,
     string DirectoryScopeId,
     string ScopeDescription,
-    int MaxDurationHours);
+    string ConnectionName);
